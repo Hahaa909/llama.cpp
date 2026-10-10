@@ -66,6 +66,57 @@ def test_lora_per_request():
         assert match_regex(re_test, res.body["content"])
 
 
+def test_cache_ram_does_not_reuse_prompt_with_different_lora():
+    """A RAM prompt cache entry must not be restored under another LoRA scale."""
+    global server
+    server.n_slots = 1
+    server.kv_unified = True
+    server.cache_ram = 64
+    server.n_predict = 32
+    server.temperature = 0.0
+    server.start()
+
+    prompt = "Look in thy glass"
+
+    # Populate the slot with the prompt while the adapter is disabled.
+    res = server.make_request("POST", "/completion", data={
+        "prompt": prompt,
+        "lora": [{"id": 0, "scale": 0.0}],
+        "seed": 42,
+        "temperature": 0.0,
+    })
+    assert res.status_code == 200
+
+    # Force the slot to be evicted to the RAM cache with a different adapter state.
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "A different prompt",
+        "lora": [{"id": 0, "scale": 1.0}],
+        "seed": 42,
+        "temperature": 0.0,
+    })
+    assert res.status_code == 200
+
+    # The cache-enabled and explicitly uncached requests must produce the same
+    # continuation when the requested LoRA configuration is unchanged.
+    cached = server.make_request("POST", "/completion", data={
+        "prompt": prompt,
+        "lora": [{"id": 0, "scale": 1.0}],
+        "seed": 42,
+        "temperature": 0.0,
+    })
+    uncached = server.make_request("POST", "/completion", data={
+        "prompt": prompt,
+        "lora": [{"id": 0, "scale": 1.0}],
+        "seed": 42,
+        "temperature": 0.0,
+        "cache_prompt": False,
+    })
+
+    assert cached.status_code == 200
+    assert uncached.status_code == 200
+    assert cached.body["content"] == uncached.body["content"]
+
+
 @pytest.mark.skipif(not is_slow_test_allowed(), reason="skipping slow test")
 def test_with_big_model():
     server = ServerProcess()
